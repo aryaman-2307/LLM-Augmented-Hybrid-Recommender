@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="LLM-Augmented Hybrid Recommendation System — MovieLens 100K × GPT-4o-mini × SVD. Interactive dashboard for explainable movie recommendations.">
+  <title>LLM Hybrid Recommender — MovieLens × GPT-4o-mini × SVD</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎬</text></svg>">
+</head>
+<body>
+  <!-- Toast container -->
+  <div class="toast-container" id="toast-container"></div>
+
+  <div class="app-container">
+    <!-- ═══ Hero ═══ -->
+    <header class="hero" id="hero">
+      <div class="hero-badge">
+        <span class="dot"></span>
+        MovieLens 100K × GPT-4o-mini × SVD
+      </div>
+      <h1>LLM-Augmented Hybrid<br>Recommender System</h1>
+      <p>
+        Bridging Collaborative Filtering with Chain-of-Thought reasoning
+        to produce explainable, semantically-aware movie recommendations.
+      </p>
+      <div class="hero-stats">
+        <div class="hero-stat">
+          <div class="value" id="stat-users">943</div>
+          <div class="label">Users</div>
+        </div>
+        <div class="hero-stat">
+          <div class="value" id="stat-movies">1,682</div>
+          <div class="label">Movies</div>
+        </div>
+        <div class="hero-stat">
+          <div class="value" id="stat-ratings">100K</div>
+          <div class="label">Ratings</div>
+        </div>
+        <div class="hero-stat">
+          <div class="value" id="stat-model">GPT-4o-mini</div>
+          <div class="label">LLM Model</div>
+        </div>
+      </div>
+    </header>
+
+    <!-- ═══ Nav Tabs ═══ -->
+    <nav class="nav-tabs" id="nav-tabs">
+      <button class="nav-tab active" data-tab="recommend" id="tab-recommend">
+        <span class="tab-icon">🎯</span>Recommendations
+      </button>
+      <button class="nav-tab" data-tab="evaluate" id="tab-evaluate">
+        <span class="tab-icon">📊</span>Evaluation
+      </button>
+      <button class="nav-tab" data-tab="svd-cv" id="tab-svd-cv">
+        <span class="tab-icon">🔄</span>SVD Cross-Val
+      </button>
+      <button class="nav-tab" data-tab="architecture" id="tab-architecture">
+        <span class="tab-icon">🏗️</span>Architecture
+      </button>
+    </nav>
+
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <!-- TAB 1: Recommendations                                           -->
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <section class="tab-panel active" id="panel-recommend">
+
+      <!-- Controls -->
+      <div class="glass-card">
+        <div class="card-header">
+          <div class="card-title"><span class="icon">🎬</span> Get Movie Recommendations</div>
+        </div>
+        <div class="controls-row">
+          <div class="control-group">
+            <label class="control-label" for="rec-user-id">User ID (1–943)</label>
+            <input type="number" class="control-input" id="rec-user-id" min="1" max="943" placeholder="Random">
+          </div>
+          <div class="control-group">
+            <label class="control-label" for="rec-top-n">Top N</label>
+            <input type="number" class="control-input" id="rec-top-n" min="1" max="50" value="10">
+          </div>
+          <div class="control-group">
+            <label class="control-label" for="rec-split">Split</label>
+            <input type="number" class="control-input" id="rec-split" min="1" max="5" value="1">
+          </div>
+          <div class="control-group" style="flex-direction: row; gap: 10px; align-items: flex-end;">
+            <button class="btn btn-primary" id="btn-recommend" onclick="getRecommendations()">
+              <span id="btn-rec-text">🔮 Get Hybrid Recs</span>
+              <span id="btn-rec-spinner" class="spinner" style="display:none"></span>
+            </button>
+            <button class="btn btn-secondary" id="btn-recommend-svd" onclick="getSVDRecommendations()">
+              ⚡ SVD Only (instant)
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- User Profile (shown after recommendation) -->
+      <div id="user-profile-section" style="display: none;">
+        <div class="profile-grid">
+          <!-- Taste Profile & Loved/Disliked -->
+          <div class="glass-card">
+            <div class="card-header">
+              <div class="card-title"><span class="icon">👤</span> <span id="profile-user-title">User Profile</span></div>
+              <div class="card-subtitle" id="profile-total-ratings"></div>
+            </div>
+
+            <div id="taste-profile-section" style="display: none; margin-bottom: 16px;">
+              <h4 style="font-size:13px; color: var(--text-muted); margin-bottom:8px; text-transform:uppercase; letter-spacing:1px;">LLM Taste Profile</h4>
+              <div class="taste-profile-box" id="taste-profile-text"></div>
+            </div>
+
+            <h4 style="font-size:13px; color: var(--text-muted); margin-bottom:8px; text-transform:uppercase; letter-spacing:1px;">❤️ Loved Movies</h4>
+            <div class="movie-list" id="loved-movies"></div>
+
+            <h4 style="font-size:13px; color: var(--text-muted); margin: 16px 0 8px; text-transform:uppercase; letter-spacing:1px;">👎 Disliked Movies</h4>
+            <div class="movie-list" id="disliked-movies"></div>
+          </div>
+
+          <!-- Rating Distribution & Top Genres -->
+          <div class="glass-card">
+            <div class="card-header">
+              <div class="card-title"><span class="icon">📊</span> Taste Distribution</div>
+            </div>
+
+            <h4 style="font-size:13px; color: var(--text-muted); margin-bottom: 12px; text-transform:uppercase; letter-spacing:1px;">Rating Distribution</h4>
+            <div class="rating-bars" id="rating-distribution"></div>
+
+            <h4 style="font-size:13px; color: var(--text-muted); margin: 20px 0 12px; text-transform:uppercase; letter-spacing:1px;">Top Genres</h4>
+            <div class="genre-chips" id="top-genres"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Recommendations Results -->
+      <div id="rec-results">
+        <div class="empty-state">
+          <div class="empty-icon">🎬</div>
+          <h3>Ready to Recommend</h3>
+          <p>Enter a User ID or click "Get Hybrid Recs" to discover movies.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <!-- TAB 2: Evaluation                                                 -->
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <section class="tab-panel" id="panel-evaluate">
+      <div class="glass-card">
+        <div class="card-header">
+          <div class="card-title"><span class="icon">📊</span> SVD vs LLM-Hybrid Evaluation</div>
+          <div class="card-subtitle">Compare prediction accuracy on held-out test pairs</div>
+        </div>
+        <div class="controls-row">
+          <div class="control-group">
+            <label class="control-label" for="eval-split">Split</label>
+            <input type="number" class="control-input" id="eval-split" min="1" max="5" value="1">
+          </div>
+          <div class="control-group">
+            <label class="control-label" for="eval-sample">Sample Size</label>
+            <input type="number" class="control-input" id="eval-sample" min="10" max="500" value="100">
+          </div>
+          <div class="control-group" style="align-self: flex-end;">
+            <button class="btn btn-primary" id="btn-evaluate" onclick="runEvaluation()">
+              <span id="btn-eval-text">🧪 Run Evaluation</span>
+              <span id="btn-eval-spinner" class="spinner" style="display:none"></span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div id="eval-results">
+        <div class="empty-state">
+          <div class="empty-icon">📊</div>
+          <h3>No evaluation run yet</h3>
+          <p>Click "Run Evaluation" to compare SVD baseline vs LLM-Hybrid on test data.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <!-- TAB 3: SVD Cross-validation                                       -->
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <section class="tab-panel" id="panel-svd-cv">
+      <div class="glass-card">
+        <div class="card-header">
+          <div class="card-title"><span class="icon">🔄</span> SVD 5-Split Cross-Validation</div>
+          <div class="card-subtitle">Pure SVD baseline — no LLM cost</div>
+        </div>
+        <button class="btn btn-primary" id="btn-svd-cv" onclick="runSVDCV()">
+          <span id="btn-cv-text">🏃 Run Cross-Validation</span>
+          <span id="btn-cv-spinner" class="spinner" style="display:none"></span>
+        </button>
+      </div>
+
+      <div id="cv-results">
+        <div class="empty-state">
+          <div class="empty-icon">🔄</div>
+          <h3>Cross-validation not run yet</h3>
+          <p>Click "Run Cross-Validation" to evaluate SVD across all 5 MovieLens splits.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <!-- TAB 4: Architecture                                               -->
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <section class="tab-panel" id="panel-architecture">
+      <div class="glass-card">
+        <div class="card-header">
+          <div class="card-title"><span class="icon">🏗️</span> System Architecture</div>
+          <div class="card-subtitle">How the hybrid pipeline works</div>
+        </div>
+
+        <div class="arch-flow">
+          <div class="arch-step">
+            <div class="arch-step-num">1</div>
+            <div class="arch-step-content">
+              <h3>MovieLens Data Ingestion</h3>
+              <p>Load the 943×1682 rating matrix from MovieLens 100K, parsing train/test splits (u1–u5). Extract movie metadata including titles and 19-category genre vectors from u.item.</p>
+            </div>
+          </div>
+          <div class="arch-step">
+            <div class="arch-step-num">2</div>
+            <div class="arch-step-content">
+              <h3>SVD Collaborative Filtering</h3>
+              <p>Train a bias-corrected SVD (k=50 latent factors) via <code>scipy.sparse.linalg.svds</code>. Global mean, user bias, and item bias are removed before decomposition. Produces top-50 candidate movies per user.</p>
+            </div>
+          </div>
+          <div class="arch-step">
+            <div class="arch-step-num">3</div>
+            <div class="arch-step-content">
+              <h3>GPT-4o-mini Chain-of-Thought Reasoning</h3>
+              <p>For each candidate, construct a structured prompt with the user's loved/disliked history. GPT-4o-mini reasons step-by-step about thematic alignment, returning a <code>semantic_modifier ∈ [-1, +1]</code> and a natural-language explanation.</p>
+            </div>
+          </div>
+          <div class="arch-step">
+            <div class="arch-step-num">4</div>
+            <div class="arch-step-content">
+              <h3>Hybrid Scoring & Re-ranking</h3>
+              <p>Combine both signals: <code>Final = α × CF_score + β × LLM_modifier</code>. Re-rank candidates by final score. The LLM acts as a semantic refinement layer on top of the statistical baseline.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="arch-formula">
+          <code>Final_Score = α × CF_Prediction + β × Semantic_Modifier</code>
+          <div class="formula-desc">
+            CF_Prediction ∈ [1, 5] &nbsp;|&nbsp; Semantic_Modifier ∈ [-1, 1] &nbsp;|&nbsp; Result clipped to [1, 5]
+          </div>
+        </div>
+      </div>
+
+      <!-- Current Config -->
+      <div class="glass-card">
+        <div class="card-header">
+          <div class="card-title"><span class="icon">⚙️</span> Current Configuration</div>
+        </div>
+        <div class="config-grid" id="config-grid">
+          <div class="config-item"><div class="config-key">Alpha (α)</div><div class="config-val" id="cfg-alpha">—</div></div>
+          <div class="config-item"><div class="config-key">Beta (β)</div><div class="config-val" id="cfg-beta">—</div></div>
+          <div class="config-item"><div class="config-key">SVD Factors</div><div class="config-val" id="cfg-factors">—</div></div>
+          <div class="config-item"><div class="config-key">Top-N Candidates</div><div class="config-val" id="cfg-topn">—</div></div>
+          <div class="config-item"><div class="config-key">LLM Model</div><div class="config-val" id="cfg-model">—</div></div>
+          <div class="config-item"><div class="config-key">API Key</div><div class="config-val" id="cfg-apikey">—</div></div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

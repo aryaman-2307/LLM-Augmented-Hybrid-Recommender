@@ -1,0 +1,29 @@
+# ── Secrets ──────────────────────────────────
+.env
+
+# ── Python ──────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# ── Cache & Results (regeneratable) ─────────
+cache/
+results/
+
+# ── IDE / Editor ────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ── Virtual Environments ────────────────────
+venv/
+.venv/
+env/
