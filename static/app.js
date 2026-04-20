@@ -395,6 +395,8 @@ function renderSVDCard(rec, index) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 async function runEvaluation() {
+  const userIdRaw = document.getElementById('eval-user-id').value.trim();
+  const userId = userIdRaw ? parseInt(userIdRaw) : null;
   const split = parseInt(document.getElementById('eval-split').value) || 1;
   const sampleSize = parseInt(document.getElementById('eval-sample').value) || 100;
 
@@ -402,9 +404,16 @@ async function runEvaluation() {
   showLoading('eval-results', 3);
 
   try {
-    const data = await apiPost('/api/evaluate', { split, sample_size: sampleSize });
+    const body = { split, sample_size: sampleSize };
+    if (userId) body.user_id = userId;
+
+    const data = await apiPost('/api/evaluate', body);
     renderEvaluationResults(data);
-    showToast(`✅ Evaluation complete: ${data.n_pairs} test pairs`, 'success');
+
+    const scope = data.user_id
+      ? `User ${data.user_id}`
+      : `${data.n_users} users`;
+    showToast(`✅ Evaluation complete: ${data.n_pairs} test pairs (${scope})`, 'success');
   } catch (err) {
     document.getElementById('eval-results').innerHTML = `
       <div class="empty-state">
@@ -424,11 +433,15 @@ function renderEvaluationResults(data) {
 
   const betterRMSE = imp.rmse > 0;
   const betterMAE = imp.mae > 0;
+  const betterNDCG = (imp['ndcg@10'] || 0) > 0;
+  const betterHR = (imp['hr@10'] || 0) > 0;
+
+  const hasRanking = data.svd_baseline['NDCG@10'] !== undefined;
 
   container.innerHTML = `
     <div class="glass-card">
       <div class="card-header">
-        <div class="card-title"><span class="icon">📈</span> Results — Split u${data.split} (${data.n_pairs} pairs)</div>
+        <div class="card-title"><span class="icon">📈</span> Results — ${data.user_id ? `User ${data.user_id}` : `Split u${data.split}`} (${data.n_pairs} pairs${!data.user_id && data.n_users ? `, ${data.n_users} users` : ''})</div>
       </div>
 
       <table class="metrics-table">
@@ -438,6 +451,7 @@ function renderEvaluationResults(data) {
             <th>RMSE ↓</th>
             <th>MAE ↓</th>
             <th>NMAE ↓</th>
+            ${hasRanking ? '<th>NDCG@10 ↑</th><th>HR@10 ↑</th>' : ''}
           </tr>
         </thead>
         <tbody>
@@ -446,12 +460,20 @@ function renderEvaluationResults(data) {
             <td class="metric-value">${data.svd_baseline.RMSE.toFixed(4)}</td>
             <td class="metric-value">${data.svd_baseline.MAE.toFixed(4)}</td>
             <td class="metric-value">${data.svd_baseline.NMAE.toFixed(4)}</td>
+            ${hasRanking ? `
+              <td class="metric-value">${(data.svd_baseline['NDCG@10'] || 0).toFixed(4)}</td>
+              <td class="metric-value">${(data.svd_baseline['HR@10'] || 0).toFixed(4)}</td>
+            ` : ''}
           </tr>
           <tr>
             <td class="model-name">LLM-Hybrid (α=${data.alpha}, β=${data.beta})</td>
             <td class="metric-value ${betterRMSE ? 'highlight' : ''}">${data.llm_hybrid.RMSE.toFixed(4)}</td>
             <td class="metric-value ${betterMAE ? 'highlight' : ''}">${data.llm_hybrid.MAE.toFixed(4)}</td>
             <td class="metric-value ${betterMAE ? 'highlight' : ''}">${data.llm_hybrid.NMAE.toFixed(4)}</td>
+            ${hasRanking ? `
+              <td class="metric-value ${betterNDCG ? 'highlight' : ''}">${(data.llm_hybrid['NDCG@10'] || 0).toFixed(4)}</td>
+              <td class="metric-value ${betterHR ? 'highlight' : ''}">${(data.llm_hybrid['HR@10'] || 0).toFixed(4)}</td>
+            ` : ''}
           </tr>
           <tr>
             <td class="model-name">Improvement</td>
@@ -467,6 +489,16 @@ function renderEvaluationResults(data) {
               ${imp.nmae > 0 ? `<span class="improvement-badge">▼ ${imp.nmae.toFixed(4)}</span>` :
                 `<span class="improvement-badge" style="background:rgba(255,45,149,0.1);color:var(--accent-magenta)">▲ ${Math.abs(imp.nmae).toFixed(4)}</span>`}
             </td>
+            ${hasRanking ? `
+              <td class="metric-value">
+                ${(imp['ndcg@10'] || 0) > 0 ? `<span class="improvement-badge">▲ ${(imp['ndcg@10'] || 0).toFixed(4)}</span>` :
+                  `<span class="improvement-badge" style="background:rgba(255,45,149,0.1);color:var(--accent-magenta)">▼ ${Math.abs(imp['ndcg@10'] || 0).toFixed(4)}</span>`}
+              </td>
+              <td class="metric-value">
+                ${(imp['hr@10'] || 0) > 0 ? `<span class="improvement-badge">▲ ${(imp['hr@10'] || 0).toFixed(4)}</span>` :
+                  `<span class="improvement-badge" style="background:rgba(255,45,149,0.1);color:var(--accent-magenta)">▼ ${Math.abs(imp['hr@10'] || 0).toFixed(4)}</span>`}
+              </td>
+            ` : ''}
           </tr>
         </tbody>
       </table>
@@ -502,6 +534,38 @@ function renderEvaluationResults(data) {
             </div>
           </div>
         </div>
+        ${hasRanking ? `
+        <div class="comparison-group">
+          <h4>NDCG@10 (higher is better)</h4>
+          <div class="comparison-bar">
+            <span class="comparison-bar-label">SVD</span>
+            <div class="comparison-bar-track">
+              <div class="comparison-bar-fill svd" style="width: ${(data.svd_baseline['NDCG@10'] || 0) * 100}%">${(data.svd_baseline['NDCG@10'] || 0).toFixed(4)}</div>
+            </div>
+          </div>
+          <div class="comparison-bar">
+            <span class="comparison-bar-label">Hybrid</span>
+            <div class="comparison-bar-track">
+              <div class="comparison-bar-fill hybrid" style="width: ${(data.llm_hybrid['NDCG@10'] || 0) * 100}%">${(data.llm_hybrid['NDCG@10'] || 0).toFixed(4)}</div>
+            </div>
+          </div>
+        </div>
+        <div class="comparison-group">
+          <h4>HR@10 (higher is better)</h4>
+          <div class="comparison-bar">
+            <span class="comparison-bar-label">SVD</span>
+            <div class="comparison-bar-track">
+              <div class="comparison-bar-fill svd" style="width: ${(data.svd_baseline['HR@10'] || 0) * 100}%">${(data.svd_baseline['HR@10'] || 0).toFixed(4)}</div>
+            </div>
+          </div>
+          <div class="comparison-bar">
+            <span class="comparison-bar-label">Hybrid</span>
+            <div class="comparison-bar-track">
+              <div class="comparison-bar-fill hybrid" style="width: ${(data.llm_hybrid['HR@10'] || 0) * 100}%">${(data.llm_hybrid['HR@10'] || 0).toFixed(4)}</div>
+            </div>
+          </div>
+        </div>
+        ` : ''}
       </div>
     </div>`;
 }

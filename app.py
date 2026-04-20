@@ -293,21 +293,91 @@ def recommend_svd():
 
 @app.route("/api/evaluate", methods=["POST"])
 def evaluate():
-    """Compare SVD vs Hybrid on sampled test pairs."""
+    """Compare SVD vs Hybrid on sampled test pairs.
+
+    Accepts an optional ``user_id`` (1-indexed).  When provided the
+    evaluation runs exclusively on that user's held-out test ratings so
+    each user produces unique metrics.  When omitted, a global multi-user
+    evaluation is performed using the user-grouped sampling from main.py.
+    """
     body = request.get_json(force=True)
     split = body.get("split", 1)
     sample_size = min(body.get("sample_size", 100), 500)
+    user_id = body.get("user_id")          # optional — 1-indexed
 
     try:
+        import numpy as np
+
         data = _get_split(split)
         svd = data["svd"]
         R = data["R"]
         test_df = data["test_df"]
 
-        n_pairs = min(sample_size, len(test_df))
-        test_samp = test_df.sample(n_pairs, random_state=42).reset_index(drop=True)
+        # ── Build test sample ────────────────────────────────────────────
+        if user_id is not None:
+            # ── Per-user evaluation ──────────────────────────────────────
+            user_id = int(user_id)
+            if user_id < 1 or user_id > N_USERS:
+                return jsonify({"error": f"User ID must be 1-{N_USERS}"}), 400
 
+            test_samp = test_df[test_df["user_id"] == user_id].reset_index(drop=True)
+            if len(test_samp) == 0:
+                return jsonify({
+                    "error": f"User {user_id} has no test ratings in split u{split}."
+                }), 400
+            n_pairs = len(test_samp)
+            eval_user_ids = [user_id]
+        else:
+            # ── Global multi-user sampling (mirrors main.py) ─────────────
+            items_per_user = 10
+            valid_users = (
+                test_df.groupby("user_id")
+                .filter(lambda x: len(x) >= 2)["user_id"]
+                .unique()
+            )
+            n_users = max(1, sample_size // items_per_user)
+
+            np.random.seed(42)
+            sampled_users = np.random.choice(
+                valid_users,
+                size=min(n_users, len(valid_users)),
+                replace=False,
+            )
+            test_samp = (
+                test_df[test_df["user_id"].isin(sampled_users)]
+                .groupby("user_id")
+                .head(items_per_user)
+                .reset_index(drop=True)
+            )
+            n_pairs = len(test_samp)
+            eval_user_ids = list(sampled_users)
+
+        # ── Taste profiles for evaluated users ───────────────────────────
+        unique_users = test_samp["user_id"].unique()
+        taste_profiles: dict[int, str] = {}
+
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+            async def _fetch_profiles():
+                sem = asyncio.Semaphore(5)
+                async def _fetch(u_1ind):
+                    u_0 = u_1ind - 1
+                    all_rated = get_all_rated_movies(u_0, R, _metadata)
+                    async with sem:
+                        return u_0, await generate_taste_profile(u_0, all_rated)
+                return await asyncio.gather(*[_fetch(u) for u in unique_users])
+
+            for u_idx, prof in loop.run_until_complete(_fetch_profiles()):
+                taste_profiles[u_idx] = prof
+            loop.close()
+        except Exception as tp_err:
+            print(f"[!] Taste profile generation failed: {tp_err}")
+
+        # ── Per-pair evaluation ──────────────────────────────────────────
         y_true, y_svd, y_hybrid = [], [], []
+        u_ids_test: list[int] = []
 
         for _, row in enumerate(test_samp.itertuples(index=False)):
             u_0 = row.user_id - 1
@@ -316,7 +386,6 @@ def evaluate():
 
             cf_pred = svd.predict(u_0, i_0)
 
-            # Try to get LLM modifier from cache
             loved, disliked = get_user_history(u_0, R, _metadata)
             meta = _metadata.get(i_0 + 1, {})
             target = {
@@ -325,7 +394,10 @@ def evaluate():
             }
 
             try:
-                llm = get_semantic_modifier(u_0, i_0, loved, disliked, target)
+                llm = get_semantic_modifier(
+                    u_0, i_0, loved, disliked, target,
+                    taste_profile=taste_profiles.get(u_0),
+                )
                 mod = llm["semantic_modifier"]
             except Exception:
                 mod = 0.0
@@ -335,13 +407,17 @@ def evaluate():
             y_true.append(r_true)
             y_svd.append(cf_pred)
             y_hybrid.append(hybrid_pred)
+            u_ids_test.append(u_0)
 
-        svd_metrics = compute_metrics(y_true, y_svd)
-        hybrid_metrics = compute_metrics(y_true, y_hybrid)
+        # ── Metrics (with ranking metrics via u_ids) ─────────────────────
+        svd_metrics = compute_metrics(y_true, y_svd, u_ids_test)
+        hybrid_metrics = compute_metrics(y_true, y_hybrid, u_ids_test)
 
         return jsonify({
             "split": split,
             "n_pairs": n_pairs,
+            "n_users": int(len(unique_users)),
+            "user_id": user_id,          # echoed back (None → global)
             "alpha": ALPHA,
             "beta": BETA,
             "svd_baseline": svd_metrics,
@@ -350,6 +426,8 @@ def evaluate():
                 "rmse": svd_metrics["RMSE"] - hybrid_metrics["RMSE"],
                 "mae": svd_metrics["MAE"] - hybrid_metrics["MAE"],
                 "nmae": svd_metrics["NMAE"] - hybrid_metrics["NMAE"],
+                "ndcg@10": hybrid_metrics.get("NDCG@10", 0) - svd_metrics.get("NDCG@10", 0),
+                "hr@10": hybrid_metrics.get("HR@10", 0) - svd_metrics.get("HR@10", 0),
             },
         })
 

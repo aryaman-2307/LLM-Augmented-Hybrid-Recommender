@@ -193,9 +193,15 @@ def run_evaluation(
     svd.fit(R)
     print("done.")
 
-    # Sample test pairs
-    n_pairs   = min(sample_size, len(test_df))
-    test_samp = test_df.sample(n_pairs, random_state=42).reset_index(drop=True)
+    # Sample test pairs grouped by user to support ranking metrics (NDCG, HR)
+    items_per_user = 10
+    valid_users = test_df.groupby("user_id").filter(lambda x: len(x) >= 2)["user_id"].unique()
+    n_users = max(1, sample_size // items_per_user)
+    
+    np.random.seed(42)
+    sampled_users = np.random.choice(valid_users, size=min(n_users, len(valid_users)), replace=False)
+    test_samp = test_df[test_df["user_id"].isin(sampled_users)].groupby("user_id").head(items_per_user).reset_index(drop=True)
+    n_pairs = len(test_samp)
 
     print(f"\n[*] Evaluating {n_pairs} test pairs with LLM reasoning...")
     _divider()
@@ -219,7 +225,7 @@ def run_evaluation(
         taste_profiles[u_idx] = prof
 
     y_true, y_svd, y_hybrid = [], [], []
-    y_modifiers              = []
+    y_modifiers, u_ids_test  = [], []
 
     for idx, row in enumerate(test_samp.itertuples(index=False)):
         u_0    = row.user_id - 1
@@ -247,6 +253,7 @@ def run_evaluation(
         y_svd.append(cf_pred)
         y_hybrid.append(hybrid_pred)
         y_modifiers.append(mod)
+        u_ids_test.append(u_0)
 
         if (idx + 1) % 25 == 0 or idx + 1 == n_pairs:
             print(f"  Progress: {idx+1}/{n_pairs}", end="\r")
@@ -269,12 +276,12 @@ def run_evaluation(
 
     # Metrics
     results = {
-        "SVD Baseline"                         : compute_metrics(y_true, y_svd),
-        f"LLM-Hybrid (a={ALPHA}, b={BETA})"   : compute_metrics(y_true, y_hybrid),
+        "SVD Baseline"                         : compute_metrics(y_true, y_svd, u_ids_test),
+        f"LLM-Hybrid (a={ALPHA}, b={BETA})"   : compute_metrics(y_true, y_hybrid, u_ids_test),
     }
     if y_tuned and best:
         ba, bb = best["best_alpha"], best["best_beta"]
-        results[f"LLM-Hybrid tuned (a={ba:.2f},b={bb:.2f})"] = compute_metrics(y_true, y_tuned)
+        results[f"LLM-Hybrid tuned (a={ba:.2f},b={bb:.2f})"] = compute_metrics(y_true, y_tuned, u_ids_test)
 
     print_comparison_table(results)
 
