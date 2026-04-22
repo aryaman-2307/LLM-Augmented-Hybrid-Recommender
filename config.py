@@ -41,7 +41,7 @@ LLM_CONCURRENCY: int  = 5    # max parallel async LLM calls
 # BETA is kept small (0.3) so the LLM acts as a refinement signal.
 # A large BETA would be overwhelmed by [1,5] clipping when CF is already near 5.
 ALPHA: float = 1.0   # weight on collaborative filtering score
-BETA: float  = 0.3   # weight on LLM semantic modifier
+BETA: float  = 0.15  # weight on LLM semantic modifier (reduced from 0.3 for better stability)
 
 # ── Rating scale ──────────────────────────────────────────────────────────────
 MIN_RATING: float = 1.0
