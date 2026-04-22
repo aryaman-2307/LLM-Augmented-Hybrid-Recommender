@@ -191,19 +191,27 @@
           <div class="card-title"><span class="icon">🔄</span> SVD 5-Split Cross-Validation</div>
           <div class="card-subtitle">Pure SVD baseline — no LLM cost</div>
         </div>
-        <button class="btn btn-primary" id="btn-svd-cv" onclick="runSVDCV()">
-          <span id="btn-cv-text">🏃 Run Cross-Validation</span>
-          <span id="btn-cv-spinner" class="spinner" style="display:none"></span>
-        </button>
+        <div class="controls-row" style="margin-top: 16px; gap: 12px;">
+          <button class="btn btn-secondary" id="btn-svd-cv" onclick="runSVDCV()">
+            <span id="btn-cv-text">🏃 Run SVD Baseline CV</span>
+            <span id="btn-cv-spinner" class="spinner" style="display:none"></span>
+          </button>
+          <button class="btn btn-primary" id="btn-hybrid-cv" onclick="runHybridCV()">
+            <span id="btn-hcv-text">🏆 Run Hybrid Comparison (5 Splits × 50 Users)</span>
+            <span id="btn-hcv-spinner" class="spinner" style="display:none"></span>
+          </button>
+        </div>
       </div>
 
       <div id="cv-results">
         <div class="empty-state">
           <div class="empty-icon">🔄</div>
           <h3>Cross-validation not run yet</h3>
-          <p>Click "Run Cross-Validation" to evaluate SVD across all 5 MovieLens splits.</p>
+          <p>Click "Run SVD Baseline CV" to evaluate SVD across all 5 MovieLens splits.</p>
         </div>
       </div>
+
+      <div id="hcv-results" style="margin-top: 32px;"></div>
     </section>
 
     <!-- ═══════════════════════════════════════════════════════════════════ -->
