@@ -410,8 +410,9 @@ def evaluate():
             u_ids_test.append(u_0)
 
         # ── Metrics (with ranking metrics via u_ids) ─────────────────────
-        svd_metrics = compute_metrics(y_true, y_svd, u_ids_test)
-        hybrid_metrics = compute_metrics(y_true, y_hybrid, u_ids_test)
+        k_val = 3
+        svd_metrics = compute_metrics(y_true, y_svd, u_ids_test, k=k_val, threshold=4.5)
+        hybrid_metrics = compute_metrics(y_true, y_hybrid, u_ids_test, k=k_val, threshold=4.5)
 
         return jsonify({
             "split": split,
@@ -426,8 +427,9 @@ def evaluate():
                 "rmse": svd_metrics["RMSE"] - hybrid_metrics["RMSE"],
                 "mae": svd_metrics["MAE"] - hybrid_metrics["MAE"],
                 "nmae": svd_metrics["NMAE"] - hybrid_metrics["NMAE"],
-                "ndcg@10": hybrid_metrics.get("NDCG@10", 0) - svd_metrics.get("NDCG@10", 0),
-                "hr@10": hybrid_metrics.get("HR@10", 0) - svd_metrics.get("HR@10", 0),
+                "ndcg": hybrid_metrics.get(f"NDCG@{k_val}", 0) - svd_metrics.get(f"NDCG@{k_val}", 0),
+                "hr": hybrid_metrics.get(f"HR@{k_val}", 0) - svd_metrics.get(f"HR@{k_val}", 0),
+                "k": k_val
             },
         })
 
@@ -447,38 +449,154 @@ def svd_cv():
         import numpy as np
 
         all_rmse, all_mae, all_nmae = [], [], []
+        all_ndcg, all_hr = [], []
 
         for split in range(1, 6):
             data = _get_split(split)
             svd = data["svd"]
             test_df = data["test_df"]
 
-            y_true, y_pred = [], []
+            y_true, y_pred, u_ids = [], [], []
             for row in test_df.itertuples(index=False):
                 u, i, r = row.user_id - 1, row.item_id - 1, row.rating
                 y_true.append(r)
                 y_pred.append(svd.predict(u, i))
+                u_ids.append(u)
 
-            m = compute_metrics(y_true, y_pred)
+            m = compute_metrics(y_true, y_pred, u_ids)
             results.append({
                 "split": f"u{split}",
                 "rmse": m["RMSE"],
                 "mae": m["MAE"],
                 "nmae": m["NMAE"],
+                "ndcg": m.get("NDCG@10", 0.0),
+                "hr": m.get("HR@10", 0.0),
             })
             all_rmse.append(m["RMSE"])
             all_mae.append(m["MAE"])
             all_nmae.append(m["NMAE"])
+            all_ndcg.append(m.get("NDCG@10", 0.0))
+            all_hr.append(m.get("HR@10", 0.0))
 
         avg = {
             "split": "Average",
             "rmse": float(np.mean(all_rmse)),
             "mae": float(np.mean(all_mae)),
             "nmae": float(np.mean(all_nmae)),
+            "ndcg": float(np.mean(all_ndcg)),
+            "hr": float(np.mean(all_hr)),
         }
         results.append(avg)
 
         return jsonify({"results": results})
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/hybrid-cv")
+def hybrid_cv():
+    """Run a full 5-split comparison (SVD vs Hybrid) with 50 users per split."""
+    try:
+        import numpy as np
+        results = []
+        n_users_per_split = 50
+        items_per_user = 10
+        k_val = 3
+        thresh_val = 4.5
+
+        all_svd_rmse, all_svd_ndcg, all_svd_hr = [], [], []
+        all_hyb_rmse, all_hyb_ndcg, all_hyb_hr = [], [], []
+
+        for split_idx in range(1, 6):
+            data = _get_split(split_idx)
+            svd = data["svd"]
+            R = data["R"]
+            test_df = data["test_df"]
+
+            # ── Sample Users ─────────────────────────────────────────────
+            valid_users = test_df.groupby("user_id").filter(lambda x: len(x) >= 2)["user_id"].unique()
+            np.random.seed(42 + split_idx) # unique but deterministic seed per split
+            sampled_users = np.random.choice(valid_users, size=min(n_users_per_split, len(valid_users)), replace=False)
+            
+            test_samp = test_df[test_df["user_id"].isin(sampled_users)].groupby("user_id").head(items_per_user)
+
+            # ── Fetch Profiles (Async) ──────────────────────────────────
+            taste_profiles = {}
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                async def _fetch_profiles():
+                    sem = asyncio.Semaphore(5)
+                    async def _fetch(u_1ind):
+                        u_0 = u_1ind - 1
+                        all_rated = get_all_rated_movies(u_0, R, _metadata)
+                        async with sem: return u_0, await generate_taste_profile(u_0, all_rated)
+                    return await asyncio.gather(*[_fetch(u) for u in sampled_users])
+                for u_idx, prof in loop.run_until_complete(_fetch_profiles()):
+                    taste_profiles[u_idx] = prof
+                loop.close()
+            except: pass
+
+            # ── Evaluate Pairs (ASYNCHRONOUS BATCHING) ──────────────────
+            y_true, y_svd, y_hybrid, u_ids = [], [], [], []
+            
+            async def _evaluate_pairs():
+                sem = asyncio.Semaphore(20) # Process 20 movies at once
+                async def _eval_row(row):
+                    u_0, i_0, r_true = row.user_id - 1, row.item_id - 1, float(row.rating)
+                    cf_pred = svd.predict(u_0, i_0)
+                    loved, disliked = get_user_history(u_0, R, _metadata)
+                    meta = _metadata.get(i_0 + 1, {})
+                    target = {"title": meta.get("title", ""), "genres": meta.get("genres", [])}
+                    
+                    async with sem:
+                        try:
+                            # Use an async-friendly wrapper for get_semantic_modifier
+                            llm = await loop.run_in_executor(None, get_semantic_modifier, 
+                                                           u_0, i_0, loved, disliked, target, 
+                                                           taste_profiles.get(u_0))
+                            mod = llm["semantic_modifier"]
+                        except: mod = 0.0
+                    return r_true, cf_pred, hybrid_rating_prediction(cf_pred, mod), u_0
+
+                return await asyncio.gather(*[_eval_row(row) for row in test_samp.itertuples(index=False)])
+
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                results_batch = loop.run_until_complete(_evaluate_pairs())
+                for rt, rsvd, rhyb, uid in results_batch:
+                    y_true.append(rt); y_svd.append(rsvd); y_hybrid.append(rhyb); u_ids.append(uid)
+                loop.close()
+            except Exception as batch_err:
+                print(f"[!] Batch evaluation failed: {batch_err}")
+
+            m_svd = compute_metrics(y_true, y_svd, u_ids, k=k_val, threshold=thresh_val)
+            m_hyb = compute_metrics(y_true, y_hybrid, u_ids, k=k_val, threshold=thresh_val)
+
+            results.append({
+                "split": f"u{split_idx}",
+                "svd": m_svd,
+                "hybrid": m_hyb,
+                "improvement": m_svd["RMSE"] - m_hyb["RMSE"]
+            })
+            
+            all_svd_rmse.append(m_svd["RMSE"])
+            all_svd_ndcg.append(m_svd.get(f"NDCG@{k_val}", 0))
+            all_svd_hr.append(m_svd.get(f"HR@{k_val}", 0))
+            all_hyb_rmse.append(m_hyb["RMSE"])
+            all_hyb_ndcg.append(m_hyb.get(f"NDCG@{k_val}", 0))
+            all_hyb_hr.append(m_hyb.get(f"HR@{k_val}", 0))
+
+        summary = {
+            "split": "AVERAGE",
+            "svd": {"RMSE": np.mean(all_svd_rmse), f"NDCG@{k_val}": np.mean(all_svd_ndcg), f"HR@{k_val}": np.mean(all_svd_hr)},
+            "hybrid": {"RMSE": np.mean(all_hyb_rmse), f"NDCG@{k_val}": np.mean(all_hyb_ndcg), f"HR@{k_val}": np.mean(all_hyb_hr)},
+            "k": k_val
+        }
+        
+        return jsonify({"results": results, "summary": summary})
 
     except Exception as e:
         traceback.print_exc()
