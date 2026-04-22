@@ -70,9 +70,11 @@ def _taste_cache_key(user_id: int) -> str:
 
 SYSTEM_PROMPT = (
     "You are an expert cinematic recommender system. "
-    "Your job is to analyze a user's movie viewing history, identify latent thematic "
-    "preferences (e.g., 'loves non-linear narratives', 'prefers gritty realism'), "
-    "and evaluate how well a target movie aligns with those preferences. "
+    "Your job is to analyze a user's movie viewing history and evaluate how well a target movie aligns with their latent preferences. "
+    "GUIDELINES: "
+    "1. Be conservative. 0.0 is the neutral default. "
+    "2. Only use modifiers > 0.5 or < -0.5 if there is undeniable thematic evidence. "
+    "3. If the genres are a mix of liked and disliked, stay near 0.0. "
     "Always respond with a valid JSON object containing exactly two keys: "
     "\"reasoning\" (string, max 3 sentences) and \"semantic_modifier\" (float in [-1.0, 1.0])."
 )
@@ -116,7 +118,9 @@ Task:
 1. Think step-by-step (Chain of Thought) about the underlying themes of the movies the user loved vs. disliked.
 2. Compare these themes to the Target Movie's genres and what you know about its plot and style.
 3. Predict a "Semantic Modifier" between -1.0 and +1.0 indicating how strongly the user's taste aligns with the Target Movie.
-   Use +1.0 for perfect alignment, 0.0 for neutral, -1.0 for strong mismatch.
+   - Use 0.0 as the conservative default for neutral or mixed alignment.
+   - Use small values (+/- 0.1 to 0.3) for minor alignment/mismatch.
+   - Use large values (+/- 0.7 to 1.0) ONLY for extreme cases.
 
 Output strictly as a JSON object:
 {{
@@ -142,7 +146,8 @@ Target Movie to Evaluate: {target['title']} (Genres: {target_genres})
 Task:
 1. Think step-by-step about how well the Target Movie matches this user's taste profile.
 2. Predict a "Semantic Modifier" between -1.0 and +1.0 indicating alignment.
-   Use +1.0 for perfect alignment, 0.0 for neutral, -1.0 for strong mismatch.
+   - Use 0.0 as the conservative default.
+   - Be subtle; only use extreme values (+/- 1.0) if the match is unmistakable.
 
 Output strictly as a JSON object:
 {{
